@@ -118,6 +118,9 @@ PUID=1000
 PGID=1000
 EOF
 
+MYSQL_DATABASE=snipeit
+MYSQL_USER=snipeit
+MYSQL_PASSWORD=${MYSQL_PASSWORD}
 echo "==> Writing docker-compose.yml"
 cat > docker-compose.yml <<EOF
 services:
