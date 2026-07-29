@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Snipe-IT installer for Ubuntu 24.04 (Noble)
 # - Installs Docker Engine + Compose plugin
+# - Configures Docker networking to avoid 172.17/16 conflicts
 # - Creates Snipe-IT project files
 # - Starts Snipe-IT + MySQL via docker compose
 #
@@ -46,7 +47,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '1,40p' "$0"
+      sed -n '1,50p' "$0"
       exit 0
       ;;
     *)
@@ -92,17 +93,51 @@ $SUDO apt update
 $SUDO apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 $SUDO systemctl enable --now docker
 
-# Generate strong passwords and APP_KEY
+echo "==> Ensuring Docker network defaults (avoid 172.17.0.0/16 conflicts)"
+$SUDO mkdir -p /etc/docker
+if [[ ! -f /etc/docker/daemon.json ]]; then
+  $SUDO tee /etc/docker/daemon.json >/dev/null <<'JSON'
+{
+  "bip": "192.168.4.1/24",
+  "default-address-pools": [
+    { "base": "192.168.240.0/20", "size": 24 }
+  ]
+}
+JSON
+  $SUDO systemctl restart docker
+else
+  if ! $SUDO grep -q '"default-address-pools"' /etc/docker/daemon.json; then
+    echo "==> Backing up existing /etc/docker/daemon.json and applying safe defaults"
+    $SUDO cp /etc/docker/daemon.json /etc/docker/daemon.json.bak.$(date +%Y%m%d%H%M%S)
+    $SUDO tee /etc/docker/daemon.json >/dev/null <<'JSON'
+{
+  "bip": "192.168.4.1/24",
+  "default-address-pools": [
+    { "base": "192.168.240.0/20", "size": 24 }
+  ]
+}
+JSON
+    $SUDO systemctl restart docker
+  fi
+fi
+
+# Generate strong secrets
 MYSQL_ROOT_PASSWORD="$(openssl rand -base64 32 | tr -d '\n')"
 MYSQL_PASSWORD="$(openssl rand -base64 32 | tr -d '\n')"
 APP_KEY_RAW="$(openssl rand -base64 32 | tr -d '\n')"
 APP_KEY="base64:${APP_KEY_RAW}"
 
+# Explicit/safe defaults used by compose interpolation too
+MYSQL_DATABASE="${MYSQL_DATABASE:-snipeit}"
+MYSQL_USER="${MYSQL_USER:-snipeit}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-$MYSQL_PASSWORD}"
+
 mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
+echo "==> Using PROJECT_DIR=$PROJECT_DIR"
 
 echo "==> Writing .env"
-cat > .env <<EOF
+cat > .env <<ENVEOF
 APP_URL=${APP_URL}
 APP_KEY=${APP_KEY}
 APP_ENV=production
@@ -110,19 +145,16 @@ APP_DEBUG=false
 APP_TIMEZONE=${APP_TIMEZONE}
 
 MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-MYSQL_DATABASE=snipeit
-MYSQL_USER=snipeit
+MYSQL_DATABASE=${MYSQL_DATABASE}
+MYSQL_USER=${MYSQL_USER}
 MYSQL_PASSWORD=${MYSQL_PASSWORD}
 
 PUID=1000
 PGID=1000
-EOF
+ENVEOF
 
-MYSQL_DATABASE=snipeit
-MYSQL_USER=snipeit
-MYSQL_PASSWORD=${MYSQL_PASSWORD}
 echo "==> Writing docker-compose.yml"
-cat > docker-compose.yml <<EOF
+cat > docker-compose.yml <<COMPOSEEOF
 services:
   snipeit:
     image: snipe/snipe-it:latest
@@ -153,7 +185,7 @@ services:
 volumes:
   snipeit_data:
   mysql_data:
-EOF
+COMPOSEEOF
 
 echo "==> Starting containers"
 $SUDO docker compose up -d
