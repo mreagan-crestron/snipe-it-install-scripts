@@ -208,6 +208,21 @@ COMPOSEEOF
 echo "==> Starting containers"
 $SUDO docker compose up -d
 
+echo "==> Waiting for MySQL to accept connections"
+MAX_TRIES=30
+for i in $(seq 1 $MAX_TRIES); do
+  if $SUDO docker compose exec -T mysql mysqladmin ping -h 127.0.0.1 -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent >/dev/null 2>&1; then
+    echo "==> MySQL is ready"
+    break
+  fi
+  if [[ "$i" -eq "$MAX_TRIES" ]]; then
+    echo "ERROR: MySQL did not become ready in time"
+    $SUDO docker compose logs --tail=120 mysql || true
+    exit 1
+  fi
+  sleep 2
+done
+
 if [[ "$SKIP_UFW" != "true" ]]; then
   if command -v ufw >/dev/null 2>&1; then
     echo "==> Opening firewall port ${HTTP_PORT}/tcp via UFW"
