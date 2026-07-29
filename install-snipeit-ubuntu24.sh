@@ -47,7 +47,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '1,50p' "$0"
+      sed -n '1,60p' "$0"
       exit 0
       ;;
     *)
@@ -121,29 +121,47 @@ JSON
   fi
 fi
 
-# Generate strong secrets
+# Generate strong secrets (single source of truth)
 MYSQL_ROOT_PASSWORD="$(openssl rand -base64 32 | tr -d '\n')"
 MYSQL_PASSWORD="$(openssl rand -base64 32 | tr -d '\n')"
 APP_KEY_RAW="$(openssl rand -base64 32 | tr -d '\n')"
 APP_KEY="base64:${APP_KEY_RAW}"
 
-# Explicit/safe defaults used by compose interpolation too
+# Explicit defaults used by compose interpolation
 MYSQL_DATABASE="${MYSQL_DATABASE:-snipeit}"
 MYSQL_USER="${MYSQL_USER:-snipeit}"
-MYSQL_PASSWORD="${MYSQL_PASSWORD:-$MYSQL_PASSWORD}"
+
+# Keep APP_URL aligned with externally reachable URL including port
+if [[ "$APP_URL" =~ :[0-9]+$ ]]; then
+  EFFECTIVE_APP_URL="$APP_URL"
+elif [[ "$HTTP_PORT" == "80" ]]; then
+  EFFECTIVE_APP_URL="$APP_URL"
+else
+  EFFECTIVE_APP_URL="${APP_URL}:${HTTP_PORT}"
+fi
 
 mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
 echo "==> Using PROJECT_DIR=$PROJECT_DIR"
+echo "==> Effective APP_URL=$EFFECTIVE_APP_URL"
 
 echo "==> Writing .env"
 cat > .env <<ENVEOF
-APP_URL=${APP_URL}
+APP_URL=${EFFECTIVE_APP_URL}
 APP_KEY=${APP_KEY}
 APP_ENV=production
 APP_DEBUG=false
 APP_TIMEZONE=${APP_TIMEZONE}
 
+# Laravel DB_* values (used by app)
+DB_CONNECTION=mysql
+DB_HOST=mysql
+DB_PORT=3306
+DB_DATABASE=${MYSQL_DATABASE}
+DB_USERNAME=${MYSQL_USER}
+DB_PASSWORD=${MYSQL_PASSWORD}
+
+# MySQL container bootstrap values
 MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
 MYSQL_DATABASE=${MYSQL_DATABASE}
 MYSQL_USER=${MYSQL_USER}
@@ -197,11 +215,13 @@ if [[ "$SKIP_UFW" != "true" ]]; then
   fi
 fi
 
+echo "==> Clearing Laravel config cache (best effort)"
+$SUDO docker compose exec -T snipeit php artisan config:clear || true
+
 echo
 echo "Install complete."
 echo "Project directory: $PROJECT_DIR"
-echo "Snipe-IT URL: ${APP_URL}"
-echo "If using IP access, browse to: ${APP_URL} (port ${HTTP_PORT} mapped to container port 80)"
+echo "Snipe-IT URL: ${EFFECTIVE_APP_URL}"
 echo
 echo "Useful commands:"
 echo "  cd ${PROJECT_DIR}"
